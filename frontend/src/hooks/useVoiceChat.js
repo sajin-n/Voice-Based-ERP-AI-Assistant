@@ -10,10 +10,10 @@ import { useState, useRef, useCallback, useEffect } from "react";
 
 // ── VAD (Voice Activity Detection) constants ─────────────────────────
 const VAD_THRESHOLD = 0.025;
-const BARGE_IN_THRESHOLD = 0.055;
-const SPEECH_START_MS = 400;
-const BARGE_IN_START_MS = 800;
-const SILENCE_STOP_MS = 700;
+const BARGE_IN_THRESHOLD = 0.045;
+const SPEECH_START_MS = 350;
+const BARGE_IN_START_MS = 500;
+const SILENCE_STOP_MS = 500;
 const RMS_SMOOTHING = 0.35; // EMA factor for silence detection (higher = more responsive)
 
 export default function useVoiceChat() {
@@ -110,6 +110,7 @@ export default function useVoiceChat() {
   const clearAudioQueue = useCallback(() => {
     audioQueueRef.current = [];
     isPlayingRef.current = false;
+    botDoneRef.current = false; // Reset so stale bot_stopped doesn't cause premature transitions
     if (currentSourceRef.current) {
       try { currentSourceRef.current.stop(); } catch { /* ignore */ }
       currentSourceRef.current = null;
@@ -260,6 +261,11 @@ export default function useVoiceChat() {
           setStreamingText(msg.data || "");
           break;
 
+        case "llm_partial":
+          streamingTextRef.current = msg.data || "";
+          setStreamingText(msg.data || "");
+          break;
+
         case "llm_text":
           streamingTextRef.current = msg.data || "";
           setStreamingText(msg.data || "");
@@ -285,8 +291,12 @@ export default function useVoiceChat() {
 
         case "bot_stopped":
           botDoneRef.current = true;
-          // Don't transition here — let source.onended in playNextAudio handle it
-          // This ensures the last audio chunk finishes before switching to listening
+          // If nothing is playing and queue is empty, transition immediately
+          // (handles cases where TTS produced no audio or all audio already finished)
+          if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+            updateBotPhase("listening");
+          }
+          // Otherwise, source.onended in playNextAudio will handle the transition
           break;
 
         case "server_shutdown":
@@ -365,7 +375,7 @@ export default function useVoiceChat() {
       // 3. Connect WebSocket
       const backendHost = import.meta.env.VITE_BACKEND_API_HOST || window.location.host;
       const isSecure = backendHost.includes("https") || window.location.protocol === "https:";
-      const protocol = isSecure ? "ws:" : "ws:";
+      const protocol = isSecure ? "wss:" : "ws:";
       const hostOnly = backendHost.replace(/^https?:\/\//, "");
       const wsUrl = `${protocol}//${hostOnly}/ws`;
       console.log("[WS] Connecting to:", wsUrl);
