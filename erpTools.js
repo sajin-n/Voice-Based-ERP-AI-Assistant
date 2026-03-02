@@ -13,7 +13,6 @@ import {
   getSystemStatus,
   getNavigation,
   matchTroubleshooting,
-  stepEngine,
 } from "./erpKnowledgeBase.js";
 import { metricsTracker } from "./metrics.js";
 
@@ -193,16 +192,10 @@ export function processResolution(args, session) {
       escalationTrigger = kbMatches[0].escalation_trigger || "";
     }
 
-    // Try step engine
-    if (steps.length === 0 && errorCode) {
-      const engineSteps = stepEngine.getSteps?.(errorCode);
-      if (engineSteps) steps = engineSteps;
-    }
-
     // Try error code lookup for resolution steps
     if (steps.length === 0 && errorCode) {
       const errLookup = lookupError(errorCode);
-      if (errLookup && errLookup.found && errLookup.data.resolution) {
+      if (errLookup?.found && errLookup.data?.resolution) {
         steps = errLookup.data.resolution;
         title = errLookup.data.title || "";
       }
@@ -251,8 +244,8 @@ export function erpLookup(args, session) {
   switch (lookupType) {
     case "invoice": {
       const inv = lookupInvoice(identifier);
-      if (inv) {
-        const data = inv.found ? inv.data : inv;
+      if (inv && inv.found) {
+        const data = inv.data;
         // Enrich with actionable context
         const enriched = { ...data };
         if (data.status === "Overdue") {
@@ -272,8 +265,8 @@ export function erpLookup(args, session) {
 
     case "purchase_order": {
       const po = lookupPurchaseOrder(identifier);
-      if (po) {
-        const data = po.found ? po.data : po;
+      if (po && po.found) {
+        const data = po.data;
         const enriched = { ...data };
         if (data.status === "Processing") {
           enriched.action_needed = "This PO is still being processed. Expected delivery date may change.";
@@ -292,8 +285,8 @@ export function erpLookup(args, session) {
 
     case "error_code": {
       const err = lookupError(identifier);
-      if (err) {
-        const data = err.found ? err.data : err;
+      if (err && err.found) {
+        const data = err.data;
         // Also pull in any related troubleshooting article
         const kbMatches = matchTroubleshooting(identifier);
         const result = { status: "found", type: "error_code", data };
@@ -330,8 +323,8 @@ export function erpLookup(args, session) {
 
     case "user_account": {
       const user = lookupUser(identifier);
-      if (user) {
-        const data = user.found ? user.data : user;
+      if (user && user.found) {
+        const data = user.data;
         const enriched = { ...data };
         if (data.locked) {
           enriched.action_needed = "This account is currently locked. An admin can unlock it via Admin > User Management > Search User > Unlock Account.";
@@ -369,8 +362,8 @@ export function erpLookup(args, session) {
 
     case "navigation": {
       const nav = getNavigation(identifier || module);
-      if (nav) {
-        const data = nav.found ? nav.data : nav;
+      if (nav && nav.found) {
+        const data = nav.data;
         return {
           status: "found",
           type: "navigation",
@@ -379,7 +372,8 @@ export function erpLookup(args, session) {
         };
       }
       // Return available navigation topics to help the user
-      const { available_tasks } = getNavigation("__list_all__");
+      const navFallback = getNavigation("__list_all__");
+      const available_tasks = navFallback?.available_tasks;
       return {
         status: "not_found",
         type: "navigation",
