@@ -285,10 +285,8 @@ export default function useVoiceChat() {
 
         case "bot_stopped":
           botDoneRef.current = true;
-          // Transition to listening only if all audio finished playing
-          if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
-            updateBotPhase("listening");
-          }
+          // Don't transition here — let source.onended in playNextAudio handle it
+          // This ensures the last audio chunk finishes before switching to listening
           break;
 
         case "server_shutdown":
@@ -367,7 +365,7 @@ export default function useVoiceChat() {
       // 3. Connect WebSocket
       const backendHost = import.meta.env.VITE_BACKEND_API_HOST || window.location.host;
       const isSecure = backendHost.includes("https") || window.location.protocol === "https:";
-      const protocol = isSecure ? "wss:" : "ws:";
+      const protocol = isSecure ? "ws:" : "ws:";
       const hostOnly = backendHost.replace(/^https?:\/\//, "");
       const wsUrl = `${protocol}//${hostOnly}/ws`;
       console.log("[WS] Connecting to:", wsUrl);
