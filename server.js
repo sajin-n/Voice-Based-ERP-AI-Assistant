@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { dialogueManager } from "./dialogueManager.js";
 import { metricsTracker } from "./metrics.js";
 import { buildSystemPrompt } from "./erpConfig.js";
-import { transcribeAudio, chatWithTools, textToSpeech } from "./groqServices.js";
+import { transcribeAudio, chatWithTools, textToSpeech, streamTextToSpeech } from "./groqServices.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,6 +77,7 @@ wss.on("connection", (ws, req) => {
   ];
   let processing = false;
   let alive = true;
+  let ttsAbort = null; // AbortController for barge-in TTS cancellation
 
   activeSessions.set(ws, session);
 
@@ -123,13 +124,15 @@ wss.on("connection", (ws, req) => {
       sendEvent("llm_text", greetingText);
       sendEvent("llm_done", "");
 
-      // Generate TTS
+      // Generate TTS (stream chunks — each sent as soon as generated)
       sendEvent("bot_speaking", "");
-      const audioBuffers = await textToSpeech(greetingText);
-      for (const buf of audioBuffers) {
-        sendAudio(buf);
+      ttsAbort = new AbortController();
+      const greetingSignal = ttsAbort.signal;
+      await streamTextToSpeech(greetingText, (buf) => sendAudio(buf), greetingSignal);
+      ttsAbort = null;
+      if (!greetingSignal.aborted) {
+        sendEvent("bot_stopped", "");
       }
-      sendEvent("bot_stopped", "");
     } catch (err) {
       console.error("[WS] Greeting error:", err.message);
       sendEvent("llm_text", "Hello! I'm ARIA. How can I help you today?");
@@ -210,13 +213,15 @@ wss.on("connection", (ws, req) => {
         sendEvent("llm_text", reply);
         sendEvent("llm_done", "");
 
-        // 5. TTS
+        // 5. TTS (stream chunks — each sent as soon as generated)
         sendEvent("bot_speaking", "");
-        const audioBuffers = await textToSpeech(reply);
-        for (const buf of audioBuffers) {
-          sendAudio(buf);
+        ttsAbort = new AbortController();
+        const ttsSignal = ttsAbort.signal;
+        await streamTextToSpeech(reply, (buf) => sendAudio(buf), ttsSignal);
+        ttsAbort = null;
+        if (!ttsSignal.aborted) {
+          sendEvent("bot_stopped", "");
         }
-        sendEvent("bot_stopped", "");
       } catch (err) {
         console.error("[WS] Processing error:", err);
         sendEvent("llm_text", "Sorry, I encountered an error. Please try again.");
@@ -233,6 +238,14 @@ wss.on("connection", (ws, req) => {
 
         if (msg.type === "user_speaking") {
           sendEvent("user_speaking", "");
+        } else if (msg.type === "barge_in") {
+          console.log("[WS] Barge-in: user interrupted, aborting TTS");
+          if (ttsAbort) {
+            ttsAbort.abort();
+            ttsAbort = null;
+          }
+          processing = false;
+          sendEvent("bot_stopped", "");
         } else if (msg.type === "ping") {
           sendEvent("pong", Date.now());
         }
