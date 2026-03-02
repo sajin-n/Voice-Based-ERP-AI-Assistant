@@ -365,8 +365,11 @@ export default function useVoiceChat() {
       analyserRef.current = analyser;
 
       // 3. Connect WebSocket
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const backendHost = import.meta.env.VITE_BACKEND_API_HOST || window.location.host;
+      const isSecure = backendHost.includes("https") || window.location.protocol === "https:";
+      const protocol = isSecure ? "wss:" : "ws:";
+      const hostOnly = backendHost.replace(/^https?:\/\//, "");
+      const wsUrl = `${protocol}//${hostOnly}/ws`;
       console.log("[WS] Connecting to:", wsUrl);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
