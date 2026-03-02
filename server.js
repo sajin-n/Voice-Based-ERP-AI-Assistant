@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { dialogueManager } from "./dialogueManager.js";
 import { metricsTracker } from "./metrics.js";
 import { buildSystemPrompt } from "./erpConfig.js";
-import { transcribeAudio, chatWithTools, textToSpeech, streamTextToSpeech } from "./groqServices.js";
+import { transcribeAudio, chat, textToSpeech, streamTextToSpeech } from "./groqServices.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,10 +114,10 @@ wss.on("connection", (ws, req) => {
 
       messages.push({
         role: "user",
-        content: "[System: The user just connected to the ERP support line. Greet them warmly, introduce yourself as ARIA their ERP support assistant, and let them know you can help with common errors, troubleshooting steps, navigation guidance, looking up invoices and purchase orders, checking system status, and more. Keep it to 3-4 sentences. Ask how you can help them today.]",
+        content: "[System: The user just connected to the ERP support line. Greet them warmly, introduce yourself as ARIA their ERP support assistant, and let them know you can help with troubleshooting, step-by-step guidance, navigation help, and answering questions about the ERP system. Keep it to 2-3 sentences. Ask how you can help them today.]",
       });
 
-      const { reply, messages: updatedMsgs } = await chatWithTools(messages, session, sendEvent);
+      const { reply, messages: updatedMsgs } = await chat(messages, session, sendEvent);
       messages = updatedMsgs;
 
       const greetingText = reply || "Hello! I'm ARIA, your ERP support assistant. How can I help?";
@@ -197,7 +197,7 @@ wss.on("connection", (ws, req) => {
 
         // 4. LLM with tools
         sendEvent("thinking", "Processing...");
-        const { reply, messages: updatedMsgs } = await chatWithTools(
+        const { reply, messages: updatedMsgs } = await chat(
           messages,
           session,
           sendEvent

@@ -3,14 +3,13 @@
  * ===============================================
  * Wraps the Groq SDK for the three core voice-AI operations:
  *   1. transcribeAudio  – Whisper STT
- *   2. chatWithTools     – LLM with function-calling loop
+ *   2. chat              – LLM conversational completion (no tools)
  *   3. textToSpeech      – Orpheus TTS (200-char chunked)
  */
 
 import "dotenv/config";
 import Groq from "groq-sdk";
-import { TOOLS, buildSystemPrompt } from "./erpConfig.js";
-import { executeTool } from "./erpTools.js";
+import { buildSystemPrompt } from "./erpConfig.js";
 import { filterTranscription } from "./transcriptionFilter.js";
 import fs from "fs";
 import path from "path";
@@ -58,94 +57,47 @@ export async function transcribeAudio(audioBuffer) {
   }
 }
 
-// ── 2. LLM Chat with Tool-Calling Loop ──────────────────────────────
+// ── 2. LLM Chat Completion ───────────────────────────────────────────
 
 /**
- * Run a chat completion with automatic tool execution loop.
- * Loops until the model returns a text response (no more tool calls).
+ * Run a single chat completion — no tool calls, pure conversational guidance.
  *
  * @param {Array} messages – Conversation messages array
  * @param {import('./dialogueManager.js').SessionState} session
  * @param {function} [onEvent] – Optional callback for status events
  * @returns {Promise<{reply: string, messages: Array}>}
  */
-export async function chatWithTools(messages, session, onEvent) {
-  const MAX_TOOL_ROUNDS = 8;
-  let round = 0;
+export async function chat(messages, session, onEvent) {
+  const response = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages,
+    temperature: 0.6,
+    max_completion_tokens: 1024,
+  });
 
-  while (round < MAX_TOOL_ROUNDS) {
-    round++;
+  const assistantMsg = response.choices[0].message;
+  messages.push(assistantMsg);
 
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages,
-      tools: TOOLS,
-      tool_choice: "auto",
-      temperature: 0.6,
-      max_completion_tokens: 1024,
-    });
+  let reply = assistantMsg.content || "";
 
-    const choice = response.choices[0];
-    const assistantMsg = choice.message;
+  // Strip any formatting that doesn't work well in voice
+  reply = reply.replace(/<function=\w+>[\s\S]*?<\/function>/g, "").trim();
+  reply = reply.replace(/<\|.*?\|>/g, "").trim();
+  reply = reply.replace(/\*\*(.*?)\*\*/g, "$1"); // bold
+  reply = reply.replace(/\*(.*?)\*/g, "$1"); // italic
+  reply = reply.replace(/#{1,6}\s*/g, ""); // headers
+  reply = reply.replace(/```[\s\S]*?```/g, "").trim(); // code blocks
+  reply = reply.replace(/`([^`]+)`/g, "$1"); // inline code
+  // Clean up numbered lists for voice
+  reply = reply.replace(/(\d+)\.\s+/g, "Step $1: ");
 
-    // Add assistant message to history
-    messages.push(assistantMsg);
-
-    // If no tool calls, we have our final text response
-    if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-      let reply = assistantMsg.content || "";
-
-      // Strip any raw function-call syntax the model might leak
-      reply = reply.replace(/<function=\w+>[\s\S]*?<\/function>/g, "").trim();
-      reply = reply.replace(/<\|.*?\|>/g, "").trim();
-      // Strip markdown formatting that doesn't work well in voice
-      reply = reply.replace(/\*\*(.*?)\*\*/g, "$1"); // bold
-      reply = reply.replace(/\*(.*?)\*/g, "$1"); // italic
-      reply = reply.replace(/#{1,6}\s*/g, ""); // headers
-      reply = reply.replace(/```[\s\S]*?```/g, "").trim(); // code blocks
-      reply = reply.replace(/`([^`]+)`/g, "$1"); // inline code
-      // Clean up numbered lists for voice (ensure spacing)
-      reply = reply.replace(/(\d+)\.\s+/g, "Step $1: ");
-
-      // If reply is empty or too short after cleaning, provide a fallback
-      if (!reply || reply.length < 10) {
-        reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
-      }
-
-      console.log(`[LLM] Final reply (round ${round}): "${reply.slice(0, 120)}..."`);
-      return { reply, messages };
-    }
-
-    // Execute each tool call
-    for (const toolCall of assistantMsg.tool_calls) {
-      const fnName = toolCall.function.name;
-      let fnArgs;
-      try {
-        fnArgs = JSON.parse(toolCall.function.arguments);
-      } catch {
-        fnArgs = {};
-      }
-
-      console.log(`[LLM] Tool call: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
-
-      if (onEvent) {
-        onEvent("thinking", `Looking up: ${fnName}`);
-      }
-
-      const result = executeTool(fnName, fnArgs, session);
-
-      // Add tool result to messages
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: JSON.stringify(result),
-      });
-    }
+  // Fallback for empty replies
+  if (!reply || reply.length < 10) {
+    reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
   }
 
-  // Safety fallback if we hit max rounds
-  console.warn(`[LLM] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
-  return { reply: "I'm still working on that. Could you tell me more about what you need?", messages };
+  console.log(`[LLM] Reply: "${reply.slice(0, 120)}..."`);
+  return { reply, messages };
 }
 
 // ── 3. Text-to-Speech ────────────────────────────────────────────────
