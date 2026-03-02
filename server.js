@@ -26,6 +26,7 @@ const PORT = process.env.PORT || 7860;
 // ── Express App ──────────────────────────────────────────────────────
 const app = express();
 
+const VERCEL_FRONTEND = process.env.VERCEL_FRONTEND;
 // CORS – allow Vite dev server and any local origin
 app.use(
   cors({
@@ -33,6 +34,7 @@ app.use(
       "http://localhost:5173",
       "http://127.0.0.1:5173",
       `http://localhost:${PORT}`,
+      VERCEL_FRONTEND,
     ],
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
