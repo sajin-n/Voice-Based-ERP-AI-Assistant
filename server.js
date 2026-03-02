@@ -158,7 +158,7 @@ wss.on("connection", (ws, req) => {
         console.log(`[WS] Received audio: ${audioBuffer.length} bytes`);
 
         // Ignore very small audio clips (noise/accidental)
-        if (audioBuffer.length < 1000) {
+        if (audioBuffer.length < 4000) {
           console.log("[WS] Audio too short, skipping");
           processing = false;
           return;

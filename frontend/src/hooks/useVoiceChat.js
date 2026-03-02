@@ -9,8 +9,11 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 // ── VAD (Voice Activity Detection) constants ─────────────────────────
-const VAD_THRESHOLD = 0.015; // Volume threshold for "speaking"const BARGE_IN_THRESHOLD = 0.035; // Higher threshold during bot speech to avoid echoconst SPEECH_START_MS = 200; // Must exceed threshold for this long
-const SILENCE_STOP_MS = 800; // Must be below threshold for this long
+const VAD_THRESHOLD = 0.025;
+const BARGE_IN_THRESHOLD = 0.055;
+const SPEECH_START_MS = 400;
+const BARGE_IN_START_MS = 800;
+const SILENCE_STOP_MS = 1000;
 
 export default function useVoiceChat() {
   // ── State ──────────────────────────────────────────────────────────
@@ -40,6 +43,7 @@ export default function useVoiceChat() {
   const audioQueueRef = useRef([]);
   const isPlayingRef = useRef(false);
   const currentSourceRef = useRef(null);
+  const botDoneRef = useRef(false); // true once server sends bot_stopped (all audio sent)
 
   // Keep botPhaseRef in sync
   const updateBotPhase = useCallback((phase) => {
@@ -70,10 +74,11 @@ export default function useVoiceChat() {
         isPlayingRef.current = false;
         if (audioQueueRef.current.length > 0) {
           playNextAudio(); // play next in queue
-        } else {
-          // All audio finished, back to listening
+        } else if (botDoneRef.current) {
+          // Server confirmed all audio sent AND queue is empty
           updateBotPhase("listening");
         }
+        // Otherwise: more chunks still coming from server, stay in speaking
       };
       currentSourceRef.current = source;
       source.start();
@@ -90,9 +95,13 @@ export default function useVoiceChat() {
   const enqueueAudio = useCallback(
     (arrayBuffer) => {
       audioQueueRef.current.push(arrayBuffer);
+      // Ensure we're in speaking phase while audio is arriving
+      if (botPhaseRef.current !== "speaking") {
+        updateBotPhase("speaking");
+      }
       playNextAudio();
     },
-    [playNextAudio]
+    [playNextAudio, updateBotPhase]
   );
 
   // ── Clear Audio Queue (barge-in) ──────────────────────────────
@@ -152,15 +161,7 @@ export default function useVoiceChat() {
     const tick = () => {
       vadFrameRef.current = requestAnimationFrame(tick);
 
-      // Pause VAD during thinking/transcribing (nothing to interrupt yet)
-      // Allow VAD during "speaking" so user can barge-in
       const phase = botPhaseRef.current;
-      if (phase === "thinking" || phase === "transcribing") {
-        isSpeakingRef.current = false;
-        speechStartTimeRef.current = 0;
-        silenceStartTimeRef.current = 0;
-        return;
-      }
 
       analyser.getFloatTimeDomainData(dataArray);
 
@@ -174,18 +175,21 @@ export default function useVoiceChat() {
       // Higher threshold during bot speech to reduce echo-triggered false barge-ins
       const activeThreshold = phase === "speaking" ? BARGE_IN_THRESHOLD : VAD_THRESHOLD;
 
+      // Use longer sustained-speech requirement during bot speech to ignore clicks/clanks
+      const requiredMs = phase === "speaking" ? BARGE_IN_START_MS : SPEECH_START_MS;
+
       if (rms > activeThreshold) {
         silenceStartTimeRef.current = 0;
 
         if (!isSpeakingRef.current) {
           if (speechStartTimeRef.current === 0) {
             speechStartTimeRef.current = now;
-          } else if (now - speechStartTimeRef.current > SPEECH_START_MS) {
+          } else if (now - speechStartTimeRef.current > requiredMs) {
             // Speech started!
             isSpeakingRef.current = true;
 
-            // BARGE-IN: if bot was speaking, stop it immediately
-            if (phase === "speaking") {
+            // BARGE-IN: if bot was speaking or thinking, interrupt immediately
+            if (phase === "speaking" || phase === "thinking") {
               clearAudioQueue();
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: "barge_in" }));
@@ -263,11 +267,13 @@ export default function useVoiceChat() {
         }
 
         case "bot_speaking":
+          botDoneRef.current = false;
           updateBotPhase("speaking");
           break;
 
         case "bot_stopped":
-          // Only go to listening if no audio is queued
+          botDoneRef.current = true;
+          // Transition to listening only if all audio finished playing
           if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
             updateBotPhase("listening");
           }
@@ -322,6 +328,7 @@ export default function useVoiceChat() {
     isSpeakingRef.current = false;
     speechStartTimeRef.current = 0;
     silenceStartTimeRef.current = 0;
+    botDoneRef.current = false;
   }, []);
 
   // ── Connect ────────────────────────────────────────────────────────
