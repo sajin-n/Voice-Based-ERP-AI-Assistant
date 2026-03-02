@@ -73,7 +73,8 @@ const VALID_SINGLE_WORDS = new Set([
 
 const ARTEFACT_RE = /[^\w\s.,!?'"-]/g;
 const BRACKET_RE = /\[.*?\]/g;
-const MIN_ALPHA_CHARS = 2;
+const MIN_ALPHA_CHARS = 3;
+const MIN_WORDS_FOR_QUERY = 2;
 
 // Duplicate debounce
 let _lastText = "";
@@ -134,6 +135,19 @@ export function filterTranscription(text) {
     if (!VALID_SINGLE_WORDS.has(words[0].toLowerCase().replace(/[.,!?]/g, ""))) {
       return { accepted: false, reason: "single_word_invalid", filtered: cleaned };
     }
+  }
+
+  // Two-word gibberish check — reject very short phrases that aren't meaningful
+  if (words.length >= 2 && words.length <= 3) {
+    const totalAlpha = (cleaned.match(/[a-zA-Z]/g) || []).length;
+    if (totalAlpha < 6) {
+      return { accepted: false, reason: "too_short_phrase", filtered: cleaned };
+    }
+  }
+
+  // Minimum word count for queries (single valid words already pass above)
+  if (words.length < MIN_WORDS_FOR_QUERY && !VALID_SINGLE_WORDS.has(words[0]?.toLowerCase().replace(/[.,!?]/g, ""))) {
+    return { accepted: false, reason: "below_min_words", filtered: cleaned };
   }
 
   // Repetitive check
