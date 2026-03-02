@@ -50,6 +50,9 @@ ARIA automates these routine support calls using voice AI, reducing human interv
 
 ### Voice Interaction
 - **Real-time voice chat** with sub-2-second response latency
+- **Streaming TTS audio** — Audio starts playing immediately as it's generated, reducing perceived latency
+- **Barge-in interruption** — User can interrupt bot mid-sentence by speaking; audio stops instantly and bot waits for user input
+- **Echo-aware VAD** — Voice Activity Detection with higher threshold during bot speech to prevent echo-triggered false interruptions
 - **Browser-based VAD** (Voice Activity Detection) for natural turn-taking
 - **Audio playback queue** for seamless multi-chunk TTS responses
 - **Visual feedback** with animated orb showing listening/thinking/speaking phases
