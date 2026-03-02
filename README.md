@@ -19,7 +19,7 @@ ARIA automates these routine support calls using voice AI, reducing human interv
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ### Technology Stack
 
@@ -46,7 +46,7 @@ ARIA automates these routine support calls using voice AI, reducing human interv
 
 ---
 
-## 🚀 Features
+## Features
 
 ### Voice Interaction
 - **Real-time voice chat** with sub-2-second response latency
@@ -163,7 +163,7 @@ voice-based-AIbot/
 
 ---
 
-## 🎮 Usage
+## Usage
 
 1. **Click "Connect"** — The browser will request microphone access
 2. **Wait for greeting** — ARIA will introduce herself and offer help
@@ -193,7 +193,7 @@ voice-based-AIbot/
 
 ---
 
-## 🧩 Key Components
+## Key Components
 
 ### System Prompt ([erpConfig.js](erpConfig.js))
 Defines ARIA's personality, capabilities, and **response structure templates** for each query type:
@@ -281,7 +281,7 @@ The Express server serves the built frontend from `frontend/dist`.
 
 ---
 
-## 🧪 Testing Example Scenarios
+## Testing Example Scenarios
 
 1. **Error Resolution:**
    - "I can't post an invoice, getting error 5004"
@@ -305,7 +305,7 @@ The Express server serves the built frontend from `frontend/dist`.
 
 ---
 
-## 🔐 Security Notes
+## Security Notes
 
 - **API keys** are stored in `.env` (never commit this file)
 - **Frontend** is served from the same origin (no CORS issues in production)
@@ -314,7 +314,7 @@ The Express server serves the built frontend from `frontend/dist`.
 
 ---
 
-## 📈 Performance
+## Performance
 
 - **STT latency**: ~500-800ms (Whisper Large V3 Turbo)
 - **LLM latency**: ~1-2s (Llama 3.3 70B, depends on response length & tool calls)
@@ -329,7 +329,7 @@ Optimizations:
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Areas for improvement:
 - Additional ERP modules (HR, Inventory, Reporting)
@@ -340,26 +340,12 @@ Contributions are welcome! Areas for improvement:
 
 ---
 
-## 📝 License
-
-MIT License - See [LICENSE](LICENSE) for details
-
----
-
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **Groq** for fast AI inference infrastructure
 - **Meta AI** for Llama 3.3 model
 - **OpenAI** for Whisper STT model
 - **Canopy Labs** for Orpheus TTS model
-
----
-
-## 📧 Contact
-
-**Project Maintainer:** Sajin N  
-**GitHub:** [@sajin-n](https://github.com/sajin-n)  
-**Repository:** [Voice-Based-ERP-AI-Assistant](https://github.com/sajin-n/Voice-Based-ERP-AI-Assistant)
 
 ---
 

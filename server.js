@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { dialogueManager } from "./dialogueManager.js";
 import { metricsTracker } from "./metrics.js";
 import { buildSystemPrompt } from "./erpConfig.js";
-import { transcribeAudio, chatWithTools, textToSpeech, streamTextToSpeech } from "./groqServices.js";
+import { transcribeAudio, chat, textToSpeech, streamTextToSpeech, chatStreamAndSpeak } from "./groqServices.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +26,7 @@ const PORT = process.env.PORT || 7860;
 // ── Express App ──────────────────────────────────────────────────────
 const app = express();
 
+const VERCEL_FRONTEND = process.env.VERCEL_FRONTEND;
 // CORS – allow Vite dev server and any local origin
 app.use(
   cors({
@@ -33,6 +34,7 @@ app.use(
       "http://localhost:5173",
       "http://127.0.0.1:5173",
       `http://localhost:${PORT}`,
+      VERCEL_FRONTEND,
     ],
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
@@ -78,6 +80,7 @@ wss.on("connection", (ws, req) => {
   let processing = false;
   let alive = true;
   let ttsAbort = null; // AbortController for barge-in TTS cancellation
+  let processGen = 0; // Generation counter — prevents stale processing after barge-in
 
   activeSessions.set(ws, session);
 
@@ -107,30 +110,45 @@ wss.on("connection", (ws, req) => {
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
 
-  // ── Generate greeting on connect ──
+  // ── Generate greeting on connect (streamed for fast first audio) ──
   (async () => {
     try {
       sendEvent("thinking", "Preparing greeting...");
 
       messages.push({
         role: "user",
-        content: "[System: The user just connected to the ERP support line. Greet them warmly, introduce yourself as ARIA their ERP support assistant, and let them know you can help with common errors, troubleshooting steps, navigation guidance, looking up invoices and purchase orders, checking system status, and more. Keep it to 3-4 sentences. Ask how you can help them today.]",
+        content: "[System: The user just connected to the ERP support line. Greet them warmly, introduce yourself as ARIA their ERP support assistant, and let them know you can help with troubleshooting, step-by-step guidance, navigation help, and answering questions about the ERP system. Keep it to 2-3 sentences. Ask how you can help them today.]",
       });
 
-      const { reply, messages: updatedMsgs } = await chatWithTools(messages, session, sendEvent);
+      ttsAbort = new AbortController();
+      const greetingSignal = ttsAbort.signal;
+      let firstAudioSent = false;
+
+      const { reply, messages: updatedMsgs } = await chatStreamAndSpeak(
+        messages,
+        session,
+        (buf) => {
+          if (!firstAudioSent) {
+            sendEvent("bot_speaking", "");
+            firstAudioSent = true;
+          }
+          sendAudio(buf);
+        },
+        (text) => sendEvent("llm_partial", text),
+        greetingSignal
+      );
       messages = updatedMsgs;
 
       const greetingText = reply || "Hello! I'm ARIA, your ERP support assistant. How can I help?";
       sendEvent("llm_text", greetingText);
       sendEvent("llm_done", "");
-
-      // Generate TTS (stream chunks — each sent as soon as generated)
-      sendEvent("bot_speaking", "");
-      ttsAbort = new AbortController();
-      const greetingSignal = ttsAbort.signal;
-      await streamTextToSpeech(greetingText, (buf) => sendAudio(buf), greetingSignal);
       ttsAbort = null;
       if (!greetingSignal.aborted) {
+        if (!firstAudioSent) {
+          // LLM produced text but TTS didn't generate audio — fallback
+          sendEvent("bot_speaking", "");
+          await streamTextToSpeech(greetingText, (buf) => sendAudio(buf), greetingSignal);
+        }
         sendEvent("bot_stopped", "");
       }
     } catch (err) {
@@ -151,6 +169,7 @@ wss.on("connection", (ws, req) => {
         console.log("[WS] Ignoring audio — still processing previous");
         return;
       }
+      const currentGen = ++processGen;
       processing = true;
 
       try {
@@ -195,14 +214,29 @@ wss.on("connection", (ws, req) => {
           messages = [messages[0], ...messages.slice(-20)];
         }
 
-        // 4. LLM with tools
+        // 4. LLM streaming + overlapped TTS (reduces time-to-first-audio)
         sendEvent("thinking", "Processing...");
-        const { reply, messages: updatedMsgs } = await chatWithTools(
+        ttsAbort = new AbortController();
+        const ttsSignal = ttsAbort.signal;
+        let firstAudioSent = false;
+
+        const { reply, messages: updatedMsgs } = await chatStreamAndSpeak(
           messages,
           session,
-          sendEvent
+          (buf) => {
+            if (!firstAudioSent) {
+              sendEvent("bot_speaking", "");
+              firstAudioSent = true;
+            }
+            sendAudio(buf);
+          },
+          (text) => sendEvent("llm_partial", text),
+          ttsSignal
         );
         messages = updatedMsgs;
+
+        // Check if barge-in invalidated this generation
+        if (currentGen !== processGen) return;
 
         if (!reply) {
           sendEvent("bot_stopped", "");
@@ -213,11 +247,11 @@ wss.on("connection", (ws, req) => {
         sendEvent("llm_text", reply);
         sendEvent("llm_done", "");
 
-        // 5. TTS (stream chunks — each sent as soon as generated)
-        sendEvent("bot_speaking", "");
-        ttsAbort = new AbortController();
-        const ttsSignal = ttsAbort.signal;
-        await streamTextToSpeech(reply, (buf) => sendAudio(buf), ttsSignal);
+        // If no audio was generated (very short reply), fallback to non-streamed TTS
+        if (!firstAudioSent && !ttsSignal.aborted) {
+          sendEvent("bot_speaking", "");
+          await streamTextToSpeech(reply, (buf) => sendAudio(buf), ttsSignal);
+        }
         ttsAbort = null;
         if (!ttsSignal.aborted) {
           sendEvent("bot_stopped", "");
@@ -228,7 +262,7 @@ wss.on("connection", (ws, req) => {
         sendEvent("llm_done", "");
         sendEvent("bot_stopped", "");
       } finally {
-        processing = false;
+        if (currentGen === processGen) processing = false;
       }
     } else {
       // Text message (JSON command from client)
@@ -240,6 +274,7 @@ wss.on("connection", (ws, req) => {
           sendEvent("user_speaking", "");
         } else if (msg.type === "barge_in") {
           console.log("[WS] Barge-in: user interrupted, aborting TTS");
+          processGen++; // Invalidate current processing generation
           if (ttsAbort) {
             ttsAbort.abort();
             ttsAbort = null;

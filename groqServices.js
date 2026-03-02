@@ -3,14 +3,13 @@
  * ===============================================
  * Wraps the Groq SDK for the three core voice-AI operations:
  *   1. transcribeAudio  – Whisper STT
- *   2. chatWithTools     – LLM with function-calling loop
+ *   2. chat              – LLM conversational completion (no tools)
  *   3. textToSpeech      – Orpheus TTS (200-char chunked)
  */
 
 import "dotenv/config";
 import Groq from "groq-sdk";
-import { TOOLS, buildSystemPrompt } from "./erpConfig.js";
-import { executeTool } from "./erpTools.js";
+import { buildSystemPrompt } from "./erpConfig.js";
 import { filterTranscription } from "./transcriptionFilter.js";
 import fs from "fs";
 import path from "path";
@@ -58,94 +57,52 @@ export async function transcribeAudio(audioBuffer) {
   }
 }
 
-// ── 2. LLM Chat with Tool-Calling Loop ──────────────────────────────
+// ── 2. LLM Chat Completion ───────────────────────────────────────────
 
 /**
- * Run a chat completion with automatic tool execution loop.
- * Loops until the model returns a text response (no more tool calls).
+ * Run a single chat completion — no tool calls, pure conversational guidance.
  *
  * @param {Array} messages – Conversation messages array
  * @param {import('./dialogueManager.js').SessionState} session
  * @param {function} [onEvent] – Optional callback for status events
  * @returns {Promise<{reply: string, messages: Array}>}
  */
-export async function chatWithTools(messages, session, onEvent) {
-  const MAX_TOOL_ROUNDS = 8;
-  let round = 0;
+/**
+ * Clean text for voice output — strips markdown, code blocks, and formatting.
+ */
+function cleanForVoice(text) {
+  let reply = text || "";
+  reply = reply.replace(/<function=\w+>[\s\S]*?<\/function>/g, "").trim();
+  reply = reply.replace(/<\|.*?\|>/g, "").trim();
+  reply = reply.replace(/\*\*(.*?)\*\*/g, "$1"); // bold
+  reply = reply.replace(/\*(.*?)\*/g, "$1"); // italic
+  reply = reply.replace(/#{1,6}\s*/g, ""); // headers
+  reply = reply.replace(/```[\s\S]*?```/g, "").trim(); // code blocks
+  reply = reply.replace(/`([^`]+)`/g, "$1"); // inline code
+  reply = reply.replace(/(\d+)\.\s+/g, "Step $1: "); // numbered lists
+  return reply.trim();
+}
 
-  while (round < MAX_TOOL_ROUNDS) {
-    round++;
+export async function chat(messages, session, onEvent) {
+  const response = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages,
+    temperature: 0.6,
+    max_completion_tokens: 1024,
+  });
 
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages,
-      tools: TOOLS,
-      tool_choice: "auto",
-      temperature: 0.6,
-      max_completion_tokens: 1024,
-    });
+  const assistantMsg = response.choices[0].message;
+  messages.push(assistantMsg);
 
-    const choice = response.choices[0];
-    const assistantMsg = choice.message;
+  let reply = cleanForVoice(assistantMsg.content || "");
 
-    // Add assistant message to history
-    messages.push(assistantMsg);
-
-    // If no tool calls, we have our final text response
-    if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-      let reply = assistantMsg.content || "";
-
-      // Strip any raw function-call syntax the model might leak
-      reply = reply.replace(/<function=\w+>[\s\S]*?<\/function>/g, "").trim();
-      reply = reply.replace(/<\|.*?\|>/g, "").trim();
-      // Strip markdown formatting that doesn't work well in voice
-      reply = reply.replace(/\*\*(.*?)\*\*/g, "$1"); // bold
-      reply = reply.replace(/\*(.*?)\*/g, "$1"); // italic
-      reply = reply.replace(/#{1,6}\s*/g, ""); // headers
-      reply = reply.replace(/```[\s\S]*?```/g, "").trim(); // code blocks
-      reply = reply.replace(/`([^`]+)`/g, "$1"); // inline code
-      // Clean up numbered lists for voice (ensure spacing)
-      reply = reply.replace(/(\d+)\.\s+/g, "Step $1: ");
-
-      // If reply is empty or too short after cleaning, provide a fallback
-      if (!reply || reply.length < 10) {
-        reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
-      }
-
-      console.log(`[LLM] Final reply (round ${round}): "${reply.slice(0, 120)}..."`);
-      return { reply, messages };
-    }
-
-    // Execute each tool call
-    for (const toolCall of assistantMsg.tool_calls) {
-      const fnName = toolCall.function.name;
-      let fnArgs;
-      try {
-        fnArgs = JSON.parse(toolCall.function.arguments);
-      } catch {
-        fnArgs = {};
-      }
-
-      console.log(`[LLM] Tool call: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
-
-      if (onEvent) {
-        onEvent("thinking", `Looking up: ${fnName}`);
-      }
-
-      const result = executeTool(fnName, fnArgs, session);
-
-      // Add tool result to messages
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: JSON.stringify(result),
-      });
-    }
+  // Fallback for empty replies
+  if (!reply || reply.length < 10) {
+    reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
   }
 
-  // Safety fallback if we hit max rounds
-  console.warn(`[LLM] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
-  return { reply: "I'm still working on that. Could you tell me more about what you need?", messages };
+  console.log(`[LLM] Reply: "${reply.slice(0, 120)}..."`);
+  return { reply, messages };
 }
 
 // ── 3. Text-to-Speech ────────────────────────────────────────────────
@@ -267,4 +224,157 @@ export async function streamTextToSpeech(text, onChunk, signal) {
       console.error(`[TTS] Stream error for chunk "${chunk.slice(0, 40)}...":`, err.message);
     }
   }
+}
+
+/**
+ * Stream LLM chat completion with overlapped TTS generation.
+ * As sentences complete from the LLM, TTS starts generating audio immediately.
+ * This dramatically reduces time-to-first-audio compared to sequential processing.
+ *
+ * @param {Array} messages – Conversation messages array
+ * @param {import('./dialogueManager.js').SessionState} session
+ * @param {function(Buffer): void} onAudioChunk – Called with each WAV buffer
+ * @param {function(string): void} [onPartialText] – Called with accumulated text as it streams
+ * @param {AbortSignal} [signal] – Abort signal for cancellation (barge-in)
+ * @returns {Promise<{reply: string, messages: Array}>}
+ */
+export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPartialText, signal) {
+  const stream = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages,
+    temperature: 0.6,
+    max_completion_tokens: 1024,
+    stream: true,
+  });
+
+  let fullReply = "";
+  let pendingText = "";
+
+  // ── TTS producer-consumer queue ──
+  const ttsQueue = [];
+  let ttsStreamDone = false;
+  let ttsNotify = null;
+
+  // Resolve the TTS wait promise (if any) when new text or abort arrives
+  const notifyTTS = () => {
+    if (ttsNotify) { ttsNotify(); ttsNotify = null; }
+  };
+
+  // Listen for abort to unblock the TTS consumer
+  const abortHandler = () => {
+    ttsStreamDone = true;
+    notifyTTS();
+  };
+  if (signal) {
+    signal.addEventListener("abort", abortHandler, { once: true });
+  }
+
+  // TTS consumer — runs concurrently, generates audio for each queued sentence
+  const ttsConsumer = (async () => {
+    while (true) {
+      if (signal?.aborted) break;
+      if (ttsQueue.length === 0) {
+        if (ttsStreamDone) break;
+        // Wait for more text to arrive
+        await new Promise((resolve) => { ttsNotify = resolve; });
+        continue;
+      }
+      const text = ttsQueue.shift();
+      if (signal?.aborted) break;
+
+      // Generate TTS for this text (splitTextForTTS handles further chunking)
+      const subChunks = splitTextForTTS(text, 190);
+      for (const sub of subChunks) {
+        if (signal?.aborted) break;
+        try {
+          const response = await groq.audio.speech.create({
+            model: "canopylabs/orpheus-v1-english",
+            input: sub,
+            voice: "autumn",
+            response_format: "wav",
+          });
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          console.log(`[TTS+Stream] Chunk (${sub.length} chars) → ${buffer.byteLength} bytes`);
+          if (!signal?.aborted) {
+            onAudioChunk(buffer);
+          }
+        } catch (err) {
+          if (signal?.aborted) break;
+          console.error(`[TTS+Stream] Error for "${sub.slice(0, 40)}...":`, err.message);
+        }
+      }
+    }
+  })();
+
+  // ── LLM producer — streams text, flushes sentences to TTS queue ──
+  for await (const chunk of stream) {
+    if (signal?.aborted) break;
+    const delta = chunk.choices[0]?.delta?.content || "";
+    if (!delta) continue;
+
+    fullReply += delta;
+    pendingText += delta;
+
+    // Send partial accumulated text to client for live display
+    if (onPartialText) onPartialText(cleanForVoice(fullReply));
+
+    // Flush completed sentences to TTS when we have enough text
+    if (pendingText.length >= 80) {
+      let lastBoundary = -1;
+      const regex = /[.!?]\s+/g;
+      let m;
+      while ((m = regex.exec(pendingText)) !== null) {
+        lastBoundary = m.index + m[0].length;
+      }
+      // Also check for sentence ending at end of pending text
+      if (lastBoundary <= 0 && /[.!?]$/.test(pendingText.trim())) {
+        lastBoundary = pendingText.length;
+      }
+      if (lastBoundary > 0) {
+        const toFlush = cleanForVoice(pendingText.slice(0, lastBoundary).trim());
+        pendingText = pendingText.slice(lastBoundary);
+        if (toFlush && toFlush.length >= 10) {
+          ttsQueue.push(toFlush);
+          notifyTTS();
+        }
+      }
+    }
+  }
+
+  // Flush any remaining text
+  if (pendingText.trim() && !signal?.aborted) {
+    const remaining = cleanForVoice(pendingText.trim());
+    if (remaining && remaining.length >= 2) {
+      ttsQueue.push(remaining);
+      notifyTTS();
+    }
+  }
+
+  // Signal TTS consumer that no more text is coming
+  ttsStreamDone = true;
+  notifyTTS();
+
+  // Wait for TTS to finish (skip if aborted to avoid blocking)
+  if (!signal?.aborted) {
+    await ttsConsumer;
+  } else {
+    // Let the consumer finish its current chunk in the background
+    ttsConsumer.catch(() => {});
+  }
+
+  // Clean up abort listener
+  if (signal) {
+    signal.removeEventListener("abort", abortHandler);
+  }
+
+  // Build final clean reply
+  let reply = cleanForVoice(fullReply);
+  if (!reply || reply.length < 10) {
+    reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
+  }
+
+  messages.push({ role: "assistant", content: reply });
+  console.log(`[LLM+Stream] Reply: "${reply.slice(0, 120)}..."`);
+  return { reply, messages };
 }
