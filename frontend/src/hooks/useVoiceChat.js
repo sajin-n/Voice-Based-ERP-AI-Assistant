@@ -1,0 +1,396 @@
+/**
+ * useVoiceChat – React Hook for Voice Chat via WebSocket
+ * ========================================================
+ * Replaces useWebRTC + useStatusSocket with a single hook.
+ * Handles: mic access, browser-side VAD, WebSocket comms,
+ * and audio playback queue.
+ */
+
+import { useState, useRef, useCallback, useEffect } from "react";
+
+// ── VAD (Voice Activity Detection) constants ─────────────────────────
+const VAD_THRESHOLD = 0.015; // Volume threshold for "speaking"
+const SPEECH_START_MS = 200; // Must exceed threshold for this long
+const SILENCE_STOP_MS = 800; // Must be below threshold for this long
+
+export default function useVoiceChat() {
+  // ── State ──────────────────────────────────────────────────────────
+  const [state, setState] = useState("idle"); // idle | connecting | connected | error
+  const [botPhase, setBotPhase] = useState("idle"); // idle | listening | thinking | speaking
+  const [transcript, setTranscript] = useState([]);
+  const [streamingText, setStreamingText] = useState("");
+
+  // ── Refs ───────────────────────────────────────────────────────────
+  const streamingTextRef = useRef("");
+  const botPhaseRef = useRef("idle");
+  const wsRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const vadFrameRef = useRef(null);
+
+  // VAD state refs
+  const isSpeakingRef = useRef(false);
+  const speechStartTimeRef = useRef(0);
+  const silenceStartTimeRef = useRef(0);
+
+  // Audio playback
+  const playbackCtxRef = useRef(null);
+  const audioQueueRef = useRef([]);
+  const isPlayingRef = useRef(false);
+
+  // Keep botPhaseRef in sync
+  const updateBotPhase = useCallback((phase) => {
+    botPhaseRef.current = phase;
+    setBotPhase(phase);
+  }, []);
+
+  // ── Audio Playback Queue ───────────────────────────────────────────
+  const playNextAudio = useCallback(async () => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    isPlayingRef.current = true;
+
+    const buffer = audioQueueRef.current.shift();
+    try {
+      if (!playbackCtxRef.current || playbackCtxRef.current.state === "closed") {
+        playbackCtxRef.current = new AudioContext();
+      }
+      const ctx = playbackCtxRef.current;
+      // Resume if suspended (browser autoplay policy)
+      if (ctx.state === "suspended") await ctx.resume();
+
+      const audioBuffer = await ctx.decodeAudioData(buffer.slice(0)); // slice to copy
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        isPlayingRef.current = false;
+        if (audioQueueRef.current.length > 0) {
+          playNextAudio(); // play next in queue
+        } else {
+          // All audio finished, back to listening
+          updateBotPhase("listening");
+        }
+      };
+      source.start();
+    } catch (err) {
+      console.error("[Playback] Error:", err);
+      isPlayingRef.current = false;
+      if (audioQueueRef.current.length > 0) {
+        playNextAudio(); // skip and try next
+      }
+    }
+  }, [updateBotPhase]);
+
+  const enqueueAudio = useCallback(
+    (arrayBuffer) => {
+      audioQueueRef.current.push(arrayBuffer);
+      playNextAudio();
+    },
+    [playNextAudio]
+  );
+
+  // ── Start Recording ────────────────────────────────────────────────
+  const startRecording = useCallback(() => {
+    if (!mediaStreamRef.current) return;
+
+    recordingChunksRef.current = [];
+    try {
+      const recorder = new MediaRecorder(mediaStreamRef.current, {
+        mimeType: "audio/webm;codecs=opus",
+      });
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordingChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: "audio/webm;codecs=opus" });
+        recordingChunksRef.current = [];
+
+        // Send audio to server
+        if (wsRef.current?.readyState === WebSocket.OPEN && blob.size > 0) {
+          blob.arrayBuffer().then((ab) => {
+            wsRef.current.send(ab);
+            console.log(`[VAD] Sent ${ab.byteLength} bytes of audio`);
+          });
+        }
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start(100); // collect in 100ms chunks
+    } catch (err) {
+      console.error("[VAD] MediaRecorder error:", err);
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
+  }, []);
+
+  // ── VAD Loop ───────────────────────────────────────────────────────
+  const runVAD = useCallback(() => {
+    if (!analyserRef.current) return;
+
+    const analyser = analyserRef.current;
+    const dataArray = new Float32Array(analyser.fftSize);
+
+    const tick = () => {
+      vadFrameRef.current = requestAnimationFrame(tick);
+
+      // Don't detect speech while bot is speaking or thinking
+      const phase = botPhaseRef.current;
+      if (phase === "speaking" || phase === "thinking") {
+        // Reset VAD state while bot is active
+        isSpeakingRef.current = false;
+        speechStartTimeRef.current = 0;
+        silenceStartTimeRef.current = 0;
+        return;
+      }
+
+      analyser.getFloatTimeDomainData(dataArray);
+
+      // Calculate RMS volume
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i] * dataArray[i];
+      const rms = Math.sqrt(sum / dataArray.length);
+
+      const now = Date.now();
+
+      if (rms > VAD_THRESHOLD) {
+        silenceStartTimeRef.current = 0;
+
+        if (!isSpeakingRef.current) {
+          if (speechStartTimeRef.current === 0) {
+            speechStartTimeRef.current = now;
+          } else if (now - speechStartTimeRef.current > SPEECH_START_MS) {
+            // Speech started!
+            isSpeakingRef.current = true;
+            updateBotPhase("listening");
+            startRecording();
+
+            // Notify server
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: "user_speaking" }));
+            }
+          }
+        }
+      } else {
+        speechStartTimeRef.current = 0;
+
+        if (isSpeakingRef.current) {
+          if (silenceStartTimeRef.current === 0) {
+            silenceStartTimeRef.current = now;
+          } else if (now - silenceStartTimeRef.current > SILENCE_STOP_MS) {
+            // Speech ended!
+            isSpeakingRef.current = false;
+            stopRecording();
+            updateBotPhase("thinking");
+          }
+        }
+      }
+    };
+
+    vadFrameRef.current = requestAnimationFrame(tick);
+  }, [startRecording, stopRecording, updateBotPhase]);
+
+  // ── Handle Server Events ───────────────────────────────────────────
+  const handleServerEvent = useCallback(
+    (msg) => {
+      switch (msg.type) {
+        case "user_speaking":
+          updateBotPhase("listening");
+          break;
+
+        case "user_stopped":
+          updateBotPhase("thinking");
+          break;
+
+        case "transcription":
+          setTranscript((prev) => [
+            ...prev,
+            { role: "user", content: msg.data },
+          ]);
+          break;
+
+        case "thinking":
+          updateBotPhase("thinking");
+          setStreamingText(msg.data || "");
+          break;
+
+        case "llm_text":
+          streamingTextRef.current = msg.data || "";
+          setStreamingText(msg.data || "");
+          break;
+
+        case "llm_done": {
+          const finalText = streamingTextRef.current || msg.data;
+          if (finalText) {
+            setTranscript((prev) => [
+              ...prev,
+              { role: "assistant", content: finalText },
+            ]);
+          }
+          streamingTextRef.current = "";
+          setStreamingText("");
+          break;
+        }
+
+        case "bot_speaking":
+          updateBotPhase("speaking");
+          break;
+
+        case "bot_stopped":
+          // Only go to listening if no audio is queued
+          if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
+            updateBotPhase("listening");
+          }
+          break;
+
+        case "server_shutdown":
+          console.warn("[WS] Server is shutting down:", msg.data);
+          break;
+
+        default:
+          break;
+      }
+    },
+    [updateBotPhase]
+  );
+
+  // ── Cleanup Helper ─────────────────────────────────────────────────
+  const cleanup = useCallback(() => {
+    if (vadFrameRef.current) {
+      cancelAnimationFrame(vadFrameRef.current);
+      vadFrameRef.current = null;
+    }
+
+    if (mediaRecorderRef.current?.state === "recording") {
+      try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
+    if (playbackCtxRef.current) {
+      playbackCtxRef.current.close().catch(() => {});
+      playbackCtxRef.current = null;
+    }
+
+    // Clear audio queue
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+
+    analyserRef.current = null;
+    isSpeakingRef.current = false;
+    speechStartTimeRef.current = 0;
+    silenceStartTimeRef.current = 0;
+  }, []);
+
+  // ── Connect ────────────────────────────────────────────────────────
+  const connect = useCallback(async () => {
+    setState("connecting");
+
+    try {
+      // 1. Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      mediaStreamRef.current = stream;
+
+      // 2. Set up audio analysis for VAD
+      const audioCtx = new AudioContext();
+      audioContextRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      // 3. Connect WebSocket
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      console.log("[WS] Connecting to:", wsUrl);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        console.log("[WS] Connected");
+        setState("connected");
+        updateBotPhase("thinking"); // will switch when greeting arrives
+        // Start VAD
+        runVAD();
+      };
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          // Binary = audio from TTS
+          enqueueAudio(event.data);
+          return;
+        }
+
+        // Text = JSON event
+        try {
+          const msg = JSON.parse(event.data);
+          handleServerEvent(msg);
+        } catch {
+          // ignore
+        }
+      };
+
+      ws.onclose = (event) => {
+        console.log("[WS] Disconnected, code:", event.code, event.reason);
+        cleanup();
+        setState("idle");
+        updateBotPhase("idle");
+      };
+
+      ws.onerror = (err) => {
+        console.error("[WS] Error:", err);
+        cleanup();
+        setState("error");
+      };
+    } catch (err) {
+      console.error("[Connect] Error:", err);
+      setState("error");
+    }
+  }, [runVAD, enqueueAudio, handleServerEvent, cleanup, updateBotPhase]);
+
+  // ── Disconnect ─────────────────────────────────────────────────────
+  const disconnect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    cleanup();
+    setState("idle");
+    updateBotPhase("idle");
+  }, [cleanup, updateBotPhase]);
+
+  // ── Cleanup on unmount ─────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      disconnect();
+    };
+  }, [disconnect]);
+
+  return {
+    state,
+    connect,
+    disconnect,
+    botPhase,
+    transcript,
+    streamingText,
+    setTranscript,
+  };
+}

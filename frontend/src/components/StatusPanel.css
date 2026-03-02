@@ -1,0 +1,74 @@
+.status-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── Phase label ── */
+.phase-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  animation: fadeSlideIn 0.3s ease-out;
+  text-transform: uppercase;
+}
+
+.phase-label .dots {
+  animation: dotPulse 1.2s steps(3, end) infinite;
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: left;
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dotPulse {
+  0%   { content: '.';   opacity: .4; }
+  33%  { content: '..';  opacity: .6; }
+  66%  { content: '...'; opacity: .8; }
+  100% { content: '...'; opacity: .8; }
+}
+
+/* Phase colors — subtle accent tints */
+.phase-label.listening    { color: #818cf8; }
+.phase-label.transcribing { color: #a5b4fc; }
+.phase-label.thinking     { color: #c4b5fd; }
+.phase-label.speaking     { color: #86efac; }
+
+/* ── Streaming text box ── */
+.streaming-box {
+  background: rgba(15, 17, 23, 0.6);
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.streaming-label {
+  font-size: 0.6rem;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.streaming-text {
+  font-size: 0.78rem;
+  color: #a1a1aa;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+.streaming-box::-webkit-scrollbar {
+  width: 2px;
+}
+.streaming-box::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 2px;
+}
