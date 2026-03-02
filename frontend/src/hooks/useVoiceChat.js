@@ -9,8 +9,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 // ── VAD (Voice Activity Detection) constants ─────────────────────────
-const VAD_THRESHOLD = 0.015; // Volume threshold for "speaking"
-const SPEECH_START_MS = 200; // Must exceed threshold for this long
+const VAD_THRESHOLD = 0.015; // Volume threshold for "speaking"const BARGE_IN_THRESHOLD = 0.035; // Higher threshold during bot speech to avoid echoconst SPEECH_START_MS = 200; // Must exceed threshold for this long
 const SILENCE_STOP_MS = 800; // Must be below threshold for this long
 
 export default function useVoiceChat() {
@@ -40,6 +39,7 @@ export default function useVoiceChat() {
   const playbackCtxRef = useRef(null);
   const audioQueueRef = useRef([]);
   const isPlayingRef = useRef(false);
+  const currentSourceRef = useRef(null);
 
   // Keep botPhaseRef in sync
   const updateBotPhase = useCallback((phase) => {
@@ -66,6 +66,7 @@ export default function useVoiceChat() {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
       source.onended = () => {
+        currentSourceRef.current = null;
         isPlayingRef.current = false;
         if (audioQueueRef.current.length > 0) {
           playNextAudio(); // play next in queue
@@ -74,9 +75,11 @@ export default function useVoiceChat() {
           updateBotPhase("listening");
         }
       };
+      currentSourceRef.current = source;
       source.start();
     } catch (err) {
       console.error("[Playback] Error:", err);
+      currentSourceRef.current = null;
       isPlayingRef.current = false;
       if (audioQueueRef.current.length > 0) {
         playNextAudio(); // skip and try next
@@ -91,6 +94,16 @@ export default function useVoiceChat() {
     },
     [playNextAudio]
   );
+
+  // ── Clear Audio Queue (barge-in) ──────────────────────────────
+  const clearAudioQueue = useCallback(() => {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    if (currentSourceRef.current) {
+      try { currentSourceRef.current.stop(); } catch { /* ignore */ }
+      currentSourceRef.current = null;
+    }
+  }, []);
 
   // ── Start Recording ────────────────────────────────────────────────
   const startRecording = useCallback(() => {
@@ -139,10 +152,10 @@ export default function useVoiceChat() {
     const tick = () => {
       vadFrameRef.current = requestAnimationFrame(tick);
 
-      // Don't detect speech while bot is speaking or thinking
+      // Pause VAD during thinking/transcribing (nothing to interrupt yet)
+      // Allow VAD during "speaking" so user can barge-in
       const phase = botPhaseRef.current;
-      if (phase === "speaking" || phase === "thinking") {
-        // Reset VAD state while bot is active
+      if (phase === "thinking" || phase === "transcribing") {
         isSpeakingRef.current = false;
         speechStartTimeRef.current = 0;
         silenceStartTimeRef.current = 0;
@@ -158,7 +171,10 @@ export default function useVoiceChat() {
 
       const now = Date.now();
 
-      if (rms > VAD_THRESHOLD) {
+      // Higher threshold during bot speech to reduce echo-triggered false barge-ins
+      const activeThreshold = phase === "speaking" ? BARGE_IN_THRESHOLD : VAD_THRESHOLD;
+
+      if (rms > activeThreshold) {
         silenceStartTimeRef.current = 0;
 
         if (!isSpeakingRef.current) {
@@ -167,6 +183,15 @@ export default function useVoiceChat() {
           } else if (now - speechStartTimeRef.current > SPEECH_START_MS) {
             // Speech started!
             isSpeakingRef.current = true;
+
+            // BARGE-IN: if bot was speaking, stop it immediately
+            if (phase === "speaking") {
+              clearAudioQueue();
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: "barge_in" }));
+              }
+            }
+
             updateBotPhase("listening");
             startRecording();
 
@@ -193,7 +218,7 @@ export default function useVoiceChat() {
     };
 
     vadFrameRef.current = requestAnimationFrame(tick);
-  }, [startRecording, stopRecording, updateBotPhase]);
+  }, [startRecording, stopRecording, updateBotPhase, clearAudioQueue]);
 
   // ── Handle Server Events ───────────────────────────────────────────
   const handleServerEvent = useCallback(
@@ -285,9 +310,13 @@ export default function useVoiceChat() {
       playbackCtxRef.current = null;
     }
 
-    // Clear audio queue
+    // Clear audio queue and stop current playback
     audioQueueRef.current = [];
     isPlayingRef.current = false;
+    if (currentSourceRef.current) {
+      try { currentSourceRef.current.stop(); } catch { /* ignore */ }
+      currentSourceRef.current = null;
+    }
 
     analyserRef.current = null;
     isSpeakingRef.current = false;
@@ -334,6 +363,8 @@ export default function useVoiceChat() {
 
       ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
+          // Discard stale audio during barge-in (user is speaking)
+          if (isSpeakingRef.current) return;
           // Binary = audio from TTS
           enqueueAudio(event.data);
           return;

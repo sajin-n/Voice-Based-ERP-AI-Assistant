@@ -226,3 +226,45 @@ export async function textToSpeech(text) {
 
   return audioBuffers;
 }
+
+/**
+ * Stream TTS audio chunks one at a time via callback.
+ * Each chunk is sent to onChunk immediately after generation,
+ * reducing perceived latency compared to batch generation.
+ *
+ * @param {string} text – Text to synthesize
+ * @param {function(Buffer): void} onChunk – Called with each WAV buffer as it's ready
+ * @param {AbortSignal} [signal] – Optional abort signal to cancel remaining chunks
+ */
+export async function streamTextToSpeech(text, onChunk, signal) {
+  if (!text || text.trim().length === 0) return;
+
+  const chunks = splitTextForTTS(text.trim());
+
+  for (const chunk of chunks) {
+    if (signal?.aborted) {
+      console.log("[TTS] Aborted — stopping generation");
+      break;
+    }
+
+    try {
+      const response = await groq.audio.speech.create({
+        model: "canopylabs/orpheus-v1-english",
+        input: chunk,
+        voice: "autumn",
+        response_format: "wav",
+      });
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      console.log(`[TTS] Streamed chunk (${chunk.length} chars) → ${buffer.byteLength} bytes`);
+
+      if (!signal?.aborted) {
+        onChunk(buffer);
+      }
+    } catch (err) {
+      if (signal?.aborted) break;
+      console.error(`[TTS] Stream error for chunk "${chunk.slice(0, 40)}...":`, err.message);
+    }
+  }
+}
