@@ -9,8 +9,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 // ── VAD (Voice Activity Detection) constants ─────────────────────────
-const VAD_THRESHOLD = 0.015; // Volume threshold for "speaking"const BARGE_IN_THRESHOLD = 0.035; // Higher threshold during bot speech to avoid echoconst SPEECH_START_MS = 200; // Must exceed threshold for this long
-const SILENCE_STOP_MS = 800; // Must be below threshold for this long
+const VAD_THRESHOLD = 0.015;
+const BARGE_IN_THRESHOLD = 0.035;
+const SPEECH_START_MS = 200;
+const SILENCE_STOP_MS = 800;
 
 export default function useVoiceChat() {
   // ── State ──────────────────────────────────────────────────────────
