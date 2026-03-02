@@ -13,7 +13,8 @@ const VAD_THRESHOLD = 0.025;
 const BARGE_IN_THRESHOLD = 0.055;
 const SPEECH_START_MS = 400;
 const BARGE_IN_START_MS = 800;
-const SILENCE_STOP_MS = 1000;
+const SILENCE_STOP_MS = 700;
+const RMS_SMOOTHING = 0.35; // EMA factor for silence detection (higher = more responsive)
 
 export default function useVoiceChat() {
   // ── State ──────────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ export default function useVoiceChat() {
   const isSpeakingRef = useRef(false);
   const speechStartTimeRef = useRef(0);
   const silenceStartTimeRef = useRef(0);
+  const smoothedRmsRef = useRef(0);
 
   // Audio playback
   const playbackCtxRef = useRef(null);
@@ -170,6 +172,11 @@ export default function useVoiceChat() {
       for (let i = 0; i < dataArray.length; i++) sum += dataArray[i] * dataArray[i];
       const rms = Math.sqrt(sum / dataArray.length);
 
+      // Update smoothed RMS (exponential moving average)
+      // Smoothed value resists brief noise spikes for reliable silence detection
+      smoothedRmsRef.current = smoothedRmsRef.current * (1 - RMS_SMOOTHING) + rms * RMS_SMOOTHING;
+      const smoothedRms = smoothedRmsRef.current;
+
       const now = Date.now();
 
       // Higher threshold during bot speech to reduce echo-triggered false barge-ins
@@ -178,10 +185,10 @@ export default function useVoiceChat() {
       // Use longer sustained-speech requirement during bot speech to ignore clicks/clanks
       const requiredMs = phase === "speaking" ? BARGE_IN_START_MS : SPEECH_START_MS;
 
-      if (rms > activeThreshold) {
-        silenceStartTimeRef.current = 0;
-
-        if (!isSpeakingRef.current) {
+      if (!isSpeakingRef.current) {
+        // ── Not currently speaking: detect speech start using RAW RMS ──
+        if (rms > activeThreshold) {
+          silenceStartTimeRef.current = 0;
           if (speechStartTimeRef.current === 0) {
             speechStartTimeRef.current = now;
           } else if (now - speechStartTimeRef.current > requiredMs) {
@@ -204,11 +211,16 @@ export default function useVoiceChat() {
               wsRef.current.send(JSON.stringify({ type: "user_speaking" }));
             }
           }
+        } else {
+          speechStartTimeRef.current = 0;
         }
       } else {
-        speechStartTimeRef.current = 0;
-
-        if (isSpeakingRef.current) {
+        // ── Currently speaking: detect silence using SMOOTHED RMS ──
+        // Smoothed RMS ignores brief noise spikes that would falsely
+        // reset the silence timer with raw RMS
+        if (smoothedRms > activeThreshold) {
+          silenceStartTimeRef.current = 0;
+        } else {
           if (silenceStartTimeRef.current === 0) {
             silenceStartTimeRef.current = now;
           } else if (now - silenceStartTimeRef.current > SILENCE_STOP_MS) {
@@ -328,6 +340,7 @@ export default function useVoiceChat() {
     isSpeakingRef.current = false;
     speechStartTimeRef.current = 0;
     silenceStartTimeRef.current = 0;
+    smoothedRmsRef.current = 0;
     botDoneRef.current = false;
   }, []);
 
