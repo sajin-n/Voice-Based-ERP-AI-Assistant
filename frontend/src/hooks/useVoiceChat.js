@@ -152,15 +152,7 @@ export default function useVoiceChat() {
     const tick = () => {
       vadFrameRef.current = requestAnimationFrame(tick);
 
-      // Pause VAD during thinking/transcribing (nothing to interrupt yet)
-      // Allow VAD during "speaking" so user can barge-in
       const phase = botPhaseRef.current;
-      if (phase === "thinking" || phase === "transcribing") {
-        isSpeakingRef.current = false;
-        speechStartTimeRef.current = 0;
-        silenceStartTimeRef.current = 0;
-        return;
-      }
 
       analyser.getFloatTimeDomainData(dataArray);
 
@@ -184,8 +176,8 @@ export default function useVoiceChat() {
             // Speech started!
             isSpeakingRef.current = true;
 
-            // BARGE-IN: if bot was speaking, stop it immediately
-            if (phase === "speaking") {
+            // BARGE-IN: if bot was speaking or thinking, interrupt immediately
+            if (phase === "speaking" || phase === "thinking") {
               clearAudioQueue();
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: "barge_in" }));
