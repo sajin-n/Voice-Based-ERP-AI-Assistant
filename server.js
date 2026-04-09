@@ -15,7 +15,7 @@ import { fileURLToPath } from "url";
 
 import { dialogueManager } from "./dialogueManager.js";
 import { metricsTracker } from "./metrics.js";
-import { buildSystemPrompt } from "./erpConfig.js";
+import { buildSystemPrompt, tools } from "./erpConfig.js";
 import { transcribeAudio, chat, textToSpeech, streamTextToSpeech, chatStreamAndSpeak } from "./groqServices.js";
 
 const __filename = fileURLToPath(import.meta.url);

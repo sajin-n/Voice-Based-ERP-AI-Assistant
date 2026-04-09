@@ -438,9 +438,40 @@ export function executeTool(name, args, session) {
     return { status: "error", message: `Unknown tool: ${name}` };
   }
   try {
+    // Validate required arguments based on tool type
+    const validationError = validateToolArgs(name, args);
+    if (validationError) {
+      return { status: "error", message: validationError };
+    }
     return fn(args, session);
   } catch (err) {
     console.error(`[erpTools] Error executing ${name}:`, err);
     return { status: "error", message: `Tool error: ${err.message}` };
   }
+}
+
+/**
+ * Validate tool arguments before execution.
+ */
+function validateToolArgs(name, args) {
+  if (!args || typeof args !== "object") {
+    return "Invalid arguments: expected an object";
+  }
+
+  switch (name) {
+    case "analyze_user_intent":
+      if (!args.intent) return "Missing required field: intent";
+      if (typeof args.confidence !== "number") return "Missing or invalid field: confidence";
+      break;
+
+    case "erp_lookup":
+      if (!args.lookup_type) return "Missing required field: lookup_type";
+      break;
+
+    case "process_resolution":
+      if (!args.action) return "Missing required field: action";
+      break;
+  }
+
+  return null;
 }
