@@ -3,19 +3,22 @@
  * ===============================================
  * Wraps the Groq SDK for the three core voice-AI operations:
  *   1. transcribeAudio  – Whisper STT
- *   2. chat              – LLM conversational completion (no tools)
+ *   2. chat              – LLM conversational completion (with tools)
  *   3. textToSpeech      – Orpheus TTS (200-char chunked)
  */
 
 import "dotenv/config";
 import Groq from "groq-sdk";
-import { buildSystemPrompt } from "./erpConfig.js";
+import { buildSystemPrompt, tools, callTool } from "./erpConfig.js";
 import { filterTranscription } from "./transcriptionFilter.js";
 import fs from "fs";
 import path from "path";
 import os from "os";
 
 const groq = new Groq(); // reads GROQ_API_KEY from env
+
+// Tool calling loop limit
+const MAX_TOOL_CALLS = 8;
 
 // ── 1. Speech-to-Text ────────────────────────────────────────────────
 
@@ -103,6 +106,76 @@ export async function chat(messages, session, onEvent) {
 
   console.log(`[LLM] Reply: "${reply.slice(0, 120)}..."`);
   return { reply, messages };
+}
+
+/**
+ * Chat with tool calling support.
+ * Runs tool calls in a loop until the LLM provides a final response.
+ */
+export async function chatWithTools(messages, session, onEvent) {
+  let toolCallCount = 0;
+  let lastReply = null;
+
+  while (toolCallCount < MAX_TOOL_CALLS) {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages,
+      temperature: 0.6,
+      max_completion_tokens: 1024,
+      tools: tools,
+    });
+
+    const assistantMsg = response.choices[0].message;
+    messages.push(assistantMsg);
+
+    // Check if the LLM wants to call a tool
+    const toolCalls = assistantMsg.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) {
+      // No more tool calls - this is the final response
+      lastReply = cleanForVoice(assistantMsg.content || "");
+      break;
+    }
+
+    // Execute tool calls
+    for (const toolCall of toolCalls) {
+      const toolName = toolCall.function.name;
+      const toolArgs = JSON.parse(toolCall.function.arguments);
+      
+      console.log(`[LLM] Tool call: ${toolName}`, toolArgs);
+      if (onEvent) onEvent("tool_call", { name: toolName, args: toolArgs });
+
+      try {
+        const result = await callTool(toolName, toolArgs, session);
+        console.log(`[LLM] Tool result:`, result);
+
+        // Add tool result to messages
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result)
+        });
+
+        if (onEvent) onEvent("tool_result", { name: toolName, result });
+      } catch (err) {
+        console.error(`[LLM] Tool error: ${toolName}`, err);
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ error: err.message })
+        });
+      }
+    }
+
+    toolCallCount++;
+  }
+
+  // Fallback for empty replies
+  if (!lastReply || lastReply.length < 10) {
+    lastReply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
+  }
+
+  console.log(`[LLM+Tools] Final reply: "${lastReply.slice(0, 120)}..."`);
+  return { reply: lastReply, messages };
 }
 
 // ── 3. Text-to-Speech ────────────────────────────────────────────────
@@ -227,21 +300,74 @@ export async function streamTextToSpeech(text, onChunk, signal) {
 }
 
 /**
- * Stream LLM chat completion with overlapped TTS generation.
- * As sentences complete from the LLM, TTS starts generating audio immediately.
- * This dramatically reduces time-to-first-audio compared to sequential processing.
- *
- * @param {Array} messages – Conversation messages array
- * @param {import('./dialogueManager.js').SessionState} session
- * @param {function(Buffer): void} onAudioChunk – Called with each WAV buffer
- * @param {function(string): void} [onPartialText] – Called with accumulated text as it streams
- * @param {AbortSignal} [signal] – Abort signal for cancellation (barge-in)
- * @returns {Promise<{reply: string, messages: Array}>}
+ * Stream LLM chat completion with tool calling support.
+ * Executes tools as needed, then streams final text with TTS.
  */
 export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPartialText, signal) {
+  // First, check if tools might be needed by doing a non-streaming call
+  // This is more reliable for tool calling than streaming
+  let finalReply = null;
+  let toolCallCount = 0;
+
+  // Tool calling loop
+  while (toolCallCount < MAX_TOOL_CALLS) {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages,
+      temperature: 0.6,
+      max_completion_tokens: 1024,
+      tools: tools,
+    });
+
+    const assistantMsg = response.choices[0].message;
+    messages.push(assistantMsg);
+
+    const toolCalls = assistantMsg.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) {
+      finalReply = cleanForVoice(assistantMsg.content || "");
+      break;
+    }
+
+    // Execute tool calls
+    for (const toolCall of toolCalls) {
+      const toolName = toolCall.function.name;
+      const toolArgs = JSON.parse(toolCall.function.arguments);
+      
+      console.log(`[LLM] Tool call: ${toolName}`, toolArgs);
+      if (onPartialText) onPartialText(`[Using ${toolName}...]`);
+
+      try {
+        const result = await callTool(toolName, toolArgs, session);
+        console.log(`[LLM] Tool result:`, result);
+
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result)
+        });
+      } catch (err) {
+        console.error(`[LLM] Tool error: ${toolName}`, err);
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ error: err.message })
+        });
+      }
+    }
+
+    toolCallCount++;
+  }
+
+  // Fallback for empty replies
+  if (!finalReply || finalReply.length < 10) {
+    finalReply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
+  }
+
+  // Stream the final response for TTS
+  // Use streaming to enable overlapped TTS
   const stream = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
-    messages,
+    messages: [...messages, { role: "assistant", content: finalReply }],
     temperature: 0.6,
     max_completion_tokens: 1024,
     stream: true,
@@ -255,12 +381,10 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
   let ttsStreamDone = false;
   let ttsNotify = null;
 
-  // Resolve the TTS wait promise (if any) when new text or abort arrives
   const notifyTTS = () => {
     if (ttsNotify) { ttsNotify(); ttsNotify = null; }
   };
 
-  // Listen for abort to unblock the TTS consumer
   const abortHandler = () => {
     ttsStreamDone = true;
     notifyTTS();
@@ -269,20 +393,17 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
     signal.addEventListener("abort", abortHandler, { once: true });
   }
 
-  // TTS consumer — runs concurrently, generates audio for each queued sentence
   const ttsConsumer = (async () => {
     while (true) {
       if (signal?.aborted) break;
       if (ttsQueue.length === 0) {
         if (ttsStreamDone) break;
-        // Wait for more text to arrive
         await new Promise((resolve) => { ttsNotify = resolve; });
         continue;
       }
       const text = ttsQueue.shift();
       if (signal?.aborted) break;
 
-      // Generate TTS for this text (splitTextForTTS handles further chunking)
       const subChunks = splitTextForTTS(text, 190);
       for (const sub of subChunks) {
         if (signal?.aborted) break;
@@ -307,7 +428,7 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
     }
   })();
 
-  // ── LLM producer — streams text, flushes sentences to TTS queue ──
+  // Stream the final reply for display and TTS
   for await (const chunk of stream) {
     if (signal?.aborted) break;
     const delta = chunk.choices[0]?.delta?.content || "";
@@ -316,10 +437,8 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
     fullReply += delta;
     pendingText += delta;
 
-    // Send partial accumulated text to client for live display
     if (onPartialText) onPartialText(cleanForVoice(fullReply));
 
-    // Flush completed sentences to TTS when we have enough text
     if (pendingText.length >= 80) {
       let lastBoundary = -1;
       const regex = /[.!?]\s+/g;
@@ -327,7 +446,6 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
       while ((m = regex.exec(pendingText)) !== null) {
         lastBoundary = m.index + m[0].length;
       }
-      // Also check for sentence ending at end of pending text
       if (lastBoundary <= 0 && /[.!?]$/.test(pendingText.trim())) {
         lastBoundary = pendingText.length;
       }
@@ -342,7 +460,6 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
     }
   }
 
-  // Flush any remaining text
   if (pendingText.trim() && !signal?.aborted) {
     const remaining = cleanForVoice(pendingText.trim());
     if (remaining && remaining.length >= 2) {
@@ -351,30 +468,19 @@ export async function chatStreamAndSpeak(messages, session, onAudioChunk, onPart
     }
   }
 
-  // Signal TTS consumer that no more text is coming
   ttsStreamDone = true;
   notifyTTS();
 
-  // Wait for TTS to finish (skip if aborted to avoid blocking)
   if (!signal?.aborted) {
     await ttsConsumer;
   } else {
-    // Let the consumer finish its current chunk in the background
     ttsConsumer.catch(() => {});
   }
 
-  // Clean up abort listener
   if (signal) {
     signal.removeEventListener("abort", abortHandler);
   }
 
-  // Build final clean reply
-  let reply = cleanForVoice(fullReply);
-  if (!reply || reply.length < 10) {
-    reply = "I'm sorry, I wasn't able to generate a complete response. Could you please repeat your question or describe the issue in a different way?";
-  }
-
-  messages.push({ role: "assistant", content: reply });
-  console.log(`[LLM+Stream] Reply: "${reply.slice(0, 120)}..."`);
-  return { reply, messages };
+  console.log(`[LLM+Stream] Reply: "${finalReply.slice(0, 120)}..."`);
+  return { reply: finalReply, messages };
 }

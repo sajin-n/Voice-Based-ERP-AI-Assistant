@@ -428,6 +428,28 @@ export default function useVoiceChat() {
     }
   }, [runVAD, enqueueAudio, handleServerEvent, cleanup, updateBotPhase]);
 
+  // ── Send Text Message ──────────────────────────────────────────────
+  const sendTextMessage = useCallback((text) => {
+    if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    // Add user message to transcript immediately
+    setTranscript((prev) => [
+      ...prev,
+      { role: "user", content: text },
+    ]);
+
+    // Send as JSON to server
+    try {
+      wsRef.current.send(JSON.stringify({
+        type: "text_message",
+        content: text,
+      }));
+      console.log(`[Chat] Sent: ${text}`);
+    } catch (err) {
+      console.error("[Chat] Error sending message:", err);
+    }
+  }, []);
+
   // ── Disconnect ─────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
     if (wsRef.current) {
@@ -454,5 +476,6 @@ export default function useVoiceChat() {
     transcript,
     streamingText,
     setTranscript,
+    sendTextMessage,
   };
 }

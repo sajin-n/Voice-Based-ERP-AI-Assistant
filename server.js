@@ -15,7 +15,7 @@ import { fileURLToPath } from "url";
 
 import { dialogueManager } from "./dialogueManager.js";
 import { metricsTracker } from "./metrics.js";
-import { buildSystemPrompt } from "./erpConfig.js";
+import { buildSystemPrompt, tools } from "./erpConfig.js";
 import { transcribeAudio, chat, textToSpeech, streamTextToSpeech, chatStreamAndSpeak } from "./groqServices.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -283,6 +283,97 @@ wss.on("connection", (ws, req) => {
           sendEvent("bot_stopped", "");
         } else if (msg.type === "ping") {
           sendEvent("pong", Date.now());
+        } else if (msg.type === "text_message") {
+          // Handle text chat message
+          if (processing) {
+            console.log("[WS] Ignoring text — still processing previous");
+            return;
+          }
+          const currentGen = ++processGen;
+          processing = true;
+
+          try {
+            const userText = msg.content || "";
+            if (!userText.trim()) {
+              processing = false;
+              return;
+            }
+
+            console.log(`[WS] User text: "${userText}"`);
+            sendEvent("transcription", userText);
+
+            // Add user message to transcript
+            messages.push({ role: "user", content: userText });
+
+            // Update system prompt with latest context
+            messages[0] = {
+              role: "system",
+              content: buildSystemPrompt(session.toContextSummary()),
+            };
+
+            // Trim history to prevent token overflow
+            if (messages.length > 22) {
+              messages = [messages[0], ...messages.slice(-20)];
+            }
+
+            // Process with LLM
+            sendEvent("thinking", "Processing...");
+            ttsAbort = new AbortController();
+            const ttsSignal = ttsAbort.signal;
+            let firstAudioSent = false;
+
+            chatStreamAndSpeak(
+              messages,
+              session,
+              (buf) => {
+                if (!firstAudioSent) {
+                  sendEvent("bot_speaking", "");
+                  firstAudioSent = true;
+                }
+                sendAudio(buf);
+              },
+              (text) => sendEvent("llm_partial", text),
+              ttsSignal
+            ).then(({ reply, messages: updatedMsgs }) => {
+              messages = updatedMsgs;
+
+              // Check if barge-in invalidated this generation
+              if (currentGen !== processGen) return;
+
+              if (!reply) {
+                sendEvent("bot_stopped", "");
+                processing = false;
+                return;
+              }
+
+              sendEvent("llm_text", reply);
+              sendEvent("llm_done", "");
+
+              // If no audio was generated, fallback to non-streamed TTS
+              if (!firstAudioSent && !ttsSignal.aborted) {
+                sendEvent("bot_speaking", "");
+                streamTextToSpeech(reply, (buf) => sendAudio(buf), ttsSignal);
+              }
+              ttsAbort = null;
+              if (!ttsSignal.aborted) {
+                sendEvent("bot_stopped", "");
+              }
+
+              if (currentGen === processGen) processing = false;
+            }).catch((err) => {
+              console.error("[WS] Text processing error:", err);
+              sendEvent("llm_text", "Sorry, I encountered an error. Please try again.");
+              sendEvent("llm_done", "");
+              sendEvent("bot_stopped", "");
+              if (currentGen === processGen) processing = false;
+            });
+          } catch (err) {
+            console.error("[WS] Text message error:", err);
+            sendEvent("llm_text", "Sorry, I encountered an error. Please try again.");
+            sendEvent("llm_done", "");
+            sendEvent("bot_stopped", "");
+            if (currentGen === processGen) processing = false;
+          }
         }
       } catch {
         // Ignore malformed text messages
