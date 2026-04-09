@@ -1,112 +1,162 @@
+/* Neo-Brutalism Orb Styles */
+
 .orb-container {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .orb {
-  width: 64px;
-  height: 64px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   position: relative;
-  transition: transform 0.4s ease, box-shadow 0.4s ease, background 0.5s ease;
-  background: radial-gradient(circle at 38% 38%, #6366f1, #4338ca 60%, #312e81);
+  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), 
+              box-shadow 0.4s ease, 
+              background 0.5s ease;
+  border: 2px solid rgba(0, 217, 255, 0.3);
+  background: radial-gradient(circle at 35% 35%, #1a4d5f, #0a1e27);
 }
 
-/* Ring pulse overlay */
+.orb::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(0, 217, 255, 0.2), transparent);
+  pointer-events: none;
+}
+
 .orb-ring {
   position: absolute;
-  inset: -6px;
+  inset: -10px;
   border-radius: 50%;
-  border: 1.5px solid rgba(99, 102, 241, 0.2);
+  border: 2px solid rgba(0, 217, 255, 0.2);
   animation: ring-idle 3s ease-in-out infinite;
 }
 
-/* ── Idle ───────────────────────────── */
+/* ── Idle State ──────────────────────────────────────────────────── */
 .orb.idle {
-  box-shadow: 0 0 18px rgba(99, 102, 241, 0.2);
-  animation: pulse-idle 3s ease-in-out infinite;
+  background: radial-gradient(circle at 35% 35%, #0f3a45, #051620);
+  box-shadow: 
+    0 0 20px rgba(0, 217, 255, 0.2),
+    inset 0 0 20px rgba(0, 217, 255, 0.1),
+    0 0 40px rgba(0, 217, 255, 0.1);
+  animation: pulse-idle 4s ease-in-out infinite;
 }
+
+.orb.idle .orb-ring {
+  border-color: rgba(0, 217, 255, 0.15);
+}
+
 @keyframes pulse-idle {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.02); }
+  50% { transform: scale(1.05); }
 }
+
 @keyframes ring-idle {
-  0%, 100% { opacity: 0.2; transform: scale(1); }
-  50%      { opacity: 0.35; transform: scale(1.03); }
+  0%, 100% { transform: scale(1); opacity: 0.2; }
+  50% { transform: scale(1.1); opacity: 0.4; }
 }
 
-/* ── Listening ─────────────────────── */
+/* ── Listening State ─────────────────────────────────────────────── */
 .orb.listening {
-  background: radial-gradient(circle at 38% 38%, #818cf8, #6366f1 60%, #4338ca);
-  box-shadow: 0 0 24px rgba(99, 102, 241, 0.35);
-  animation: pulse-listen 1.2s ease-in-out infinite;
+  background: radial-gradient(circle at 35% 35%, #00d9ff, #0088aa);
+  box-shadow: 
+    0 0 30px rgba(0, 217, 255, 0.4),
+    inset 0 0 30px rgba(0, 217, 255, 0.2),
+    0 0 60px rgba(0, 217, 255, 0.2);
+  border-color: rgba(0, 217, 255, 0.6);
+  animation: pulse-listen 0.8s ease-in-out infinite;
 }
+
 .orb.listening .orb-ring {
-  border-color: rgba(129, 140, 248, 0.4);
-  animation: ring-listen 1.2s ease-in-out infinite;
+  border-color: rgba(0, 217, 255, 0.5);
+  animation: ring-listen 0.8s ease-in-out infinite;
 }
+
 @keyframes pulse-listen {
-  0%, 100% { transform: scale(1.02); }
-  50%      { transform: scale(1.07); }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
 }
+
 @keyframes ring-listen {
-  0%, 100% { opacity: 0.25; transform: scale(1); }
-  50%      { opacity: 0.5; transform: scale(1.06); }
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50% { transform: scale(1.15); opacity: 0.6; }
 }
 
-/* ── Transcribing ──────────────────── */
-.orb.transcribing {
-  background: radial-gradient(circle at 38% 38%, #a5b4fc, #818cf8 60%, #6366f1);
-  box-shadow: 0 0 24px rgba(129, 140, 248, 0.3);
-  animation: pulse-transcribing 0.9s ease-in-out infinite;
-}
-.orb.transcribing .orb-ring {
-  border-color: rgba(165, 180, 252, 0.4);
-  animation: ring-listen 0.9s ease-in-out infinite;
-}
-@keyframes pulse-transcribing {
-  0%, 100% { transform: scale(1.02); }
-  50%      { transform: scale(1.06); }
-}
-
-/* ── Thinking ──────────────────────── */
+/* ── Thinking State ──────────────────────────────────────────────– */
 .orb.thinking {
-  background: radial-gradient(circle at 38% 38%, #c4b5fd, #a78bfa 60%, #7c3aed);
-  box-shadow: 0 0 26px rgba(167, 139, 250, 0.3);
-  animation: pulse-think 1.4s ease-in-out infinite;
+  background: radial-gradient(circle at 35% 35%, #c084fc, #7c3aed);
+  box-shadow: 
+    0 0 30px rgba(192, 132, 252, 0.4),
+    inset 0 0 30px rgba(192, 132, 252, 0.2),
+    0 0 60px rgba(192, 132, 252, 0.2);
+  border-color: rgba(192, 132, 252, 0.6);
+  animation: pulse-think 1.2s ease-in-out infinite;
 }
+
 .orb.thinking .orb-ring {
-  border-color: rgba(196, 181, 253, 0.35);
-  animation: ring-think 1.4s ease-in-out infinite;
+  border-color: rgba(192, 132, 252, 0.5);
+  animation: ring-think 1.2s ease-in-out infinite;
 }
+
 @keyframes pulse-think {
-  0%, 100% { transform: scale(1.01); }
-  50%      { transform: scale(1.05); }
+  0%, 100% { transform: scale(1) rotateZ(0deg); }
+  50% { transform: scale(1.08) rotateZ(180deg); }
 }
+
 @keyframes ring-think {
-  0%, 100% { opacity: 0.2; transform: scale(1); }
-  50%      { opacity: 0.4; transform: scale(1.05); }
+  0%, 100% { transform: scale(1) rotateZ(0deg); opacity: 0.3; }
+  50% { transform: scale(1.12) rotateZ(180deg); opacity: 0.5; }
 }
 
-/* ── Speaking ──────────────────────── */
+/* ── Speaking State ──────────────────────────────────────────────– */
 .orb.speaking {
-  background: radial-gradient(circle at 38% 38%, #86efac, #4ade80 60%, #16a34a);
-  box-shadow: 0 0 28px rgba(74, 222, 128, 0.3);
-  animation: pulse-speak 0.8s ease-in-out infinite;
-}
-.orb.speaking .orb-ring {
-  border-color: rgba(134, 239, 172, 0.4);
-  animation: ring-speak 0.8s ease-in-out infinite;
-}
-@keyframes pulse-speak {
-  0%, 100% { transform: scale(1.03); }
-  50%      { transform: scale(1.08); }
-}
-@keyframes ring-speak {
-  0%, 100% { opacity: 0.25; transform: scale(1); }
-  50%      { opacity: 0.5; transform: scale(1.08); }
+  background: radial-gradient(circle at 35% 35%, #00f5a0, #00aa55);
+  box-shadow: 
+    0 0 35px rgba(0, 245, 160, 0.4),
+    inset 0 0 35px rgba(0, 245, 160, 0.2),
+    0 0 70px rgba(0, 245, 160, 0.2);
+  border-color: rgba(0, 245, 160, 0.7);
+  animation: pulse-speak 0.6s ease-in-out infinite;
 }
 
-/* ── Phase label (REMOVED — shown in StatusPanel only) ── */
+.orb.speaking .orb-ring {
+  border-color: rgba(0, 245, 160, 0.6);
+  animation: ring-speak 0.6s ease-in-out infinite;
+}
+
+@keyframes pulse-speak {
+  0%, 100% { transform: scale(1); }
+  25% { transform: scale(1.15); }
+  50% { transform: scale(1.1); }
+  75% { transform: scale(1.15); }
+}
+
+@keyframes ring-speak {
+  0%, 100% { 
+    transform: scale(1); 
+    opacity: 0.3;
+  }
+  50% { 
+    transform: scale(1.15); 
+    opacity: 0.6;
+  }
+}
+
+/* ── Phase Label ────────────────────────────────────────────────── */
+.phase-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b8c1d1;
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
